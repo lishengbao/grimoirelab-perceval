@@ -33,11 +33,16 @@ import os
 import re
 import subprocess
 import threading
+from dateutil.relativedelta import relativedelta
+import requests
+import random
+import json
+from datetime import datetime
 
 import dulwich.client
 import dulwich.repo
 
-from grimoirelab_toolkit.datetime import datetime_to_utc, str_to_datetime
+from grimoirelab_toolkit.datetime import datetime_to_utc, str_to_datetime, datetime_utcnow
 
 from ...backend import (Backend,
                         BackendCommand,
@@ -153,22 +158,107 @@ class Git(Backend):
         no_update = kwargs['no_update']
 
         ncommits = 0
+        repo_public = self.check_repo_public()
+        # repo_public = True
+        # print(f"{datetime.now()} {self.origin} repo_public or topic num: {repo_public}")
+        print(f"{datetime.now()} {self.origin} repo_public: {repo_public}")
+        if repo_public:
+            try:
+                self.gitpath = self.gitpath.replace("/root/.perceval/", "/data-chenqi/.perceval/")
+                if os.path.isfile(self.gitpath):
+                    commits = self.__fetch_from_log()
+                else:
+                    commits = self.__fetch_from_repo(from_date, to_date, branches,
+                                                    latest_items, no_update)
 
-        try:
-            if os.path.isfile(self.gitpath):
-                commits = self.__fetch_from_log()
-            else:
-                commits = self.__fetch_from_repo(from_date, to_date, branches,
-                                                 latest_items, no_update)
-
-            for commit in commits:
-                yield commit
-                ncommits += 1
-        except EmptyRepositoryError:
-            pass
+                for commit in commits:
+                    author_date = str_to_datetime(commit["AuthorDate"])
+                    commit["tz"] = int(author_date.strftime("%z")[0:3])
+                    yield commit
+                    ncommits += 1
+            except EmptyRepositoryError:
+                pass
+        else:
+            logger.info(f"EmptyRepositoryError repo:{self.origin}")
 
         logger.info("Fetch process completed: %s commits fetched",
                     ncommits)
+
+    def check_repo_public(self):
+
+        USER_AGENT_LIST = [
+            "Mozilla/4.0 (compatible; MSIE 6.0; Windows NT 5.1; SV1; AcooBrowser; .NET CLR 1.1.4322; .NET CLR 2.0.50727)",
+            "Mozilla/4.0 (compatible; MSIE 7.0; Windows NT 6.0; Acoo Browser; SLCC1; .NET CLR 2.0.50727; Media Center PC 5.0; "
+            ".NET CLR 3.0.04506)",
+            "Mozilla/4.0 (compatible; MSIE 7.0; AOL 9.5; AOLBuild 4337.35; Windows NT 5.1; .NET CLR 1.1.4322; .NET CLR "
+            "2.0.50727)",
+            "Mozilla/5.0 (Windows; U; MSIE 9.0; Windows NT 9.0; en-US)",
+            "Mozilla/5.0 (compatible; MSIE 9.0; Windows NT 6.1; Win64; x64; Trident/5.0; .NET CLR 3.5.30729; .NET CLR "
+            "3.0.30729; .NET CLR 2.0.50727; Media Center PC 6.0)",
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/92.0.4515.159 Safari/537.36"]
+
+        def requests_with_headers(url, headers):
+            """ Send request to fetch data """
+            response = requests.get(url, headers=headers)
+            logger.info(url)
+            if response.status_code != 200:
+                logger.info(f"""
+                    Response from: {url},
+                    error code: {response.status_code}, 
+                    error reason: {response.reason},
+                    error text: {response.text},
+                    headers: {str(headers)}
+                """)
+            return response
+
+        def get_github_repo_info(repo, token):
+            headers = {
+                'user-Agent': random.choice(USER_AGENT_LIST),
+                'Accept': 'application/vnd.github.star+json',
+                'Authorization': 'Bearer ' + token
+            }
+            if "git@github.com" in repo:
+                owner = repo.split(':')[1].split('/')[0]
+                repo_name = repo.split(':')[1].split('/')[1]
+            else:
+                owner = repo.split('/')[-2]
+                repo_name = repo.split('/')[-1]
+            url = f"https://api.github.com/repos/{owner}/{repo_name}"
+            res = requests_with_headers(url, headers)
+            if res.status_code != 200:
+                return None
+            json_text_list = json.loads(res.text)
+            return json_text_list
+        
+        def get_topic_by_repo(repo, token):
+            headers = {
+                'user-Agent': random.choice(USER_AGENT_LIST),
+                'Accept': 'application/vnd.github.star+json',
+                'Authorization': 'Bearer ' + token
+            }
+            if "git@github.com" in repo:
+                owner = repo.split(':')[1].split('/')[0]
+                repo_name = repo.split(':')[1].split('/')[1]
+            else:
+                owner = repo.split('/')[-2]
+                repo_name = repo.split('/')[-1]
+            url = f"https://api.github.com/repos/{owner}/{repo_name}/topics"
+            res = requests_with_headers(url, headers)
+            if res.status_code != 200:
+                return []
+            json_text_list = json.loads(res.text)["names"]
+            return json_text_list
+
+        repo = self.origin.replace(".git", "")
+        if "github.com" in repo:
+            token_list = []
+            repo_info = get_github_repo_info(repo, random.choice(token_list))
+            if repo_info:
+                return not repo_info["private"]
+            # topic_list = get_topic_by_repo(repo, random.choice(token_list))
+            # return len(topic_list) > 0
+        
+        return False
 
     @classmethod
     def has_archiving(cls):
@@ -270,10 +360,10 @@ class Git(Backend):
     def __fetch_from_repo(self, from_date, to_date, branches, latest_items=False, no_update=False):
         # When no latest items are set or the repository has not
         # been cloned use the default mode
-        default_mode = not latest_items or not os.path.exists(self.gitpath)
-
-        repo = self.__create_git_repository()
-
+        # default_mode = not latest_items or not os.path.exists(self.gitpath)
+        default_mode = not os.path.exists(self.gitpath)  #r路径存在false, 路径不存在true
+        repo = self.__create_git_repository()  
+        default_mode = True
         if default_mode:
             commits = self.__fetch_commits_from_repo(repo, from_date, to_date, branches, no_update)
         else:
