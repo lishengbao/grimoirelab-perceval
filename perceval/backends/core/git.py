@@ -362,7 +362,7 @@ class Git(Backend):
         # been cloned use the default mode
         # default_mode = not latest_items or not os.path.exists(self.gitpath)
         default_mode = not os.path.exists(self.gitpath)  #r路径存在false, 路径不存在true
-        repo = self.__create_git_repository()  
+        repo = self.__create_git_repository(from_date.strftime("%Y-%m-%d"))  
         default_mode = True
         if default_mode:
             commits = self.__fetch_commits_from_repo(repo, from_date, to_date, branches, no_update)
@@ -411,9 +411,9 @@ class Git(Backend):
         gitshow = repo.show(hashes)
         return self.parse_git_log_from_iter(gitshow)
 
-    def __create_git_repository(self):
+    def __create_git_repository(self, from_date="2000-01-01"):
         if not os.path.exists(self.gitpath):
-            repo = GitRepository.clone(self.uri, self.gitpath, self.ssl_verify)
+            repo = GitRepository.clone(self.uri, self.gitpath, self.ssl_verify, from_date=from_date)
         elif os.path.isdir(self.gitpath):
             repo = GitRepository(self.uri, self.gitpath)
         return repo
@@ -908,7 +908,7 @@ class GitRepository:
         }
 
     @classmethod
-    def clone(cls, uri, dirpath, ssl_verify=True):
+    def clone(cls, uri, dirpath, ssl_verify=True, from_date="2000-01-01"):
         """Clone a Git repository.
 
         Make a bare copy of the repository stored in `uri` into `dirpath`.
@@ -923,7 +923,7 @@ class GitRepository:
         :raises RepositoryError: when an error occurs cloning the given
             repository
         """
-        cmd = ['git', 'clone', '--bare', uri, dirpath]
+        cmd = ['git', 'clone', '--bare', '--shallow-since', from_date, uri, dirpath]
         if not ssl_verify:
             cmd += ['-c', 'http.sslVerify=false']
         env = {
